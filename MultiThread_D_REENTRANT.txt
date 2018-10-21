@@ -1,0 +1,37 @@
+Question  You say all multithreaded code must be compiled with _REENTRANT defined.
+What difference does it make?
+Why we use D_REENTRANT while compiling the multi thread program?
+Answer:
+It affects include files in three ways:
+The include files define prototypes for the reentrant variants of some of the standard
+library functions, e.g. gethostbyname_r() as a reentrant equivalent to gethostbyname().
+If _REENTRANT is defined, some <stdio.h> functions are no longer defined as macros,
+e.g. getc() and putc(). In a multithreaded program, stdio functions require additional
+locking, which the macros don't perform, so we must call functions instead.
+
+More importantly, <errno.h> redefines errno when _REENTRANT is defined, so that errno refers to the thread-specific errno location rather than the global errno variable. This is achieved by the following #define in <errno.h>:
+        #define errno (*(__errno_location()))
+which causes each reference to errno to call the __errno_location() function for obtaining the location where error codes are stored. libc provides a default definition of __errno_location() that always returns &errno (the address of the global errno variable). Thus, for programs not linked with LinuxThreads, defining _REENTRANT makes no difference w.r.t. errno processing. But LinuxThreads redefines __errno_location() to return a location in the thread descriptor reserved for holding the current value of errno for the calling thread.
+Thus, each thread operates on a different errno location.
+
+IF WE DON'T USE IT:
+
+Lots of trouble. If the code uses getc() or putc(), it will perform I/O without proper interlocking of the stdio buffers; this can cause lost output, duplicate output, or just crash other stdio functions. If the code consults errno, it will get back the wrong error code. The following code fragment is a typical example:
+        do {
+          r = read(fd, buf, n);
+          if (r == -1) {
+            if (errno == EINTR)   /* an error we can handle */
+              continue;
+            else {                /* other errors are fatal */
+              perror("read failed");
+              exit(100);
+            }
+          }
+        } while (...);
+Assume this code is not compiled with -D_REENTRANT, and linked with LinuxThreads. 
+At run-time, read() is interrupted. Since the C library was compiled with -D_REENTRANT, 
+read() stores its error code in the location pointed to by __errno_location(), 
+which is the thread-local errno variable. Then, the code above sees that read() returns 
+-1 and looks up errno. Since _REENTRANT is not defined, the reference to errno accesses
+the global errno variable, which is most likely 0.
+Hence the code concludes that it cannot handle the error and stops
